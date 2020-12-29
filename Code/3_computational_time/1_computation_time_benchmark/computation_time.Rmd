@@ -1,0 +1,183 @@
+---
+title: "Timing Dx methods time"
+author: "Kevin Wang"
+date: "`r paste0('Initiated on 2020 Oct 31, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+# Summary
+
+# Loading 
+
+## packages
+```{r, message = FALSE}
+library(tidyverse)
+library(BiocParallel)
+library(splatter)
+library(scater)
+library(furrr)
+
+plan(multisession, workers = 10)
+options(future.globals.maxSize = 20*1024^3)
+runs = 20
+
+# param = SerialParam()
+source("../../../R/Cepo.R")
+source("../../../R/doDE.R")
+source("../../../R/doDD.R")
+```
+
+# Simulating data
+
+```{r, message = FALSE}
+set.seed(123)
+data_grid = expand.grid(
+  n_cell_types = 3, 
+  n_genes = 20000,
+  n_cells = c(500, 1000, 5000, 10000)
+  # n_cells = c(100, 500)
+) %>% as_tibble() %>% 
+  dplyr::mutate(splatter_obj = furrr::future_pmap(
+    .l = lst(n_cell_types, n_genes, n_cells),
+    .f = function(n_cell_types = n_cell_types, 
+                  n_genes = n_genes, 
+                  n_cells = n_cells){
+      # # browser()
+      exprs_mat = log2(matrix(rpois(n_genes*n_cells, lambda = 0.5), nrow = n_genes) + 1L)
+      rownames(exprs_mat) = paste0("gene", 1:n_genes)
+      colnames(exprs_mat) = paste0("cell", 1:n_cells)
+      cell_types = sample(letters[1:n_cell_types], size = n_cells, replace = TRUE)
+      # exprs_mat = as(exprs_mat, "sparseMatrix")
+      result = list(
+        exprs_mat = exprs_mat,
+        cell_types = cell_types)
+      return(result)}
+  ))
+
+data_grid %>% glimpse()
+```
+
+# Functions that repeats Dx calculations 
+```{r}
+timing_dx = function(exprs_mat, cell_types){
+  ncells = ncol(exprs_mat)
+  ## All timing are in seconds 
+  ds_time = system.time(Cepo(exprsMat = exprs_mat, cellTypes = cell_types))[["elapsed"]]
+  voom_time = system.time(doVoom(exprsMat = exprs_mat, cellTypes = cell_types))[["elapsed"]]
+  
+  if(ncells > 10000){
+    mast_time = Inf
+    dd_time = Inf
+  } else {
+    mast_time = system.time(doMAST(exprsMat = exprs_mat, cellTypes = cell_types))[["elapsed"]]
+    dd_time = system.time(doDD(exprsMat = exprs_mat, cellTypes = cell_types))[["elapsed"]]
+  }
+  
+  result = tibble(
+    method = c("Cepo", "Voom", "MAST", "DD"),
+    time = c(ds_time, voom_time, mast_time, dd_time)
+    # unit = "second"
+  )
+  return(result)
+}
+
+multiple_timing = function(runs = 100, exprs_mat, cell_types){
+  result_list = furrr::future_map(
+    .x = 1:runs, 
+    .f = function(i){
+      timing_dx(exprs_mat = exprs_mat, cell_types = cell_types)}, 
+    .progress = TRUE, 
+    .options = furrr::furrr_options(packages = c("limma", "MAST")))
+  
+  n_digits = floor(log10(runs)) + 1L
+  names(result_list) = sprintf(paste0("exp_%0", n_digits, "d"), seq_len(runs))
+  result_tbl = result_list %>% bind_rows(.id = "exp_num")
+  return(result_tbl)
+}
+
+# timing_dx(exprs_mat = data_grid$splatter_obj[[1]]$exprs_mat,
+#           cell_types = data_grid$splatter_obj[[1]]$cell_types)
+# 
+# multiple_timing(
+#   runs = 2,
+#   exprs_mat = data_grid$splatter_obj[[1]]$exprs_mat,
+#   cell_types = data_grid$splatter_obj[[1]]$cell_types)
+```
+
+# Running timing 
+```{r}
+timing_tbl = purrr::map(.x = data_grid$splatter_obj,
+                        .f = ~ multiple_timing(
+                          runs = runs, 
+                          exprs_mat = .x$exprs_mat, 
+                          cell_types = .x$cell_types))
+
+result_tbl = data_grid %>% 
+  dplyr::mutate(timing_tbl) %>% 
+  dplyr::select(-splatter_obj) %>% 
+  tidyr::unnest("timing_tbl")
+
+write_csv(x = result_tbl, path = "../../../Table/simulation_timing.csv")
+```
+
+```{r}
+timing_tbl = readr::read_csv(file = "../../../Table/simulation_timing.csv")
+
+plotdf = timing_tbl %>% 
+  dplyr::mutate(
+    time = ifelse(is.infinite(time), NA, time),
+    `Number of genes` = n_genes, 
+    `Number of cells` = n_cells %>% factor) %>% 
+  group_by(`Number of genes`, `Number of cells`, method) %>% 
+  summarise(
+    median_time = median(time),
+    q1_time = quantile(time, 0.25, na.rm = TRUE),
+    q3_time = quantile(time, 0.75, na.rm = TRUE))
+
+y_max = plotdf$median_time[!is.infinite(plotdf$median_time)] %>% max(na.rm = TRUE)
+y_breaks_scales = ceiling(log10(y_max)) + 1L
+y_breaks = 10^seq(0, y_breaks_scales)
+
+time_plot = plotdf %>% 
+  ggplot(aes(x = `Number of cells`, y = median_time,
+             colour = method)) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin=q1_time, ymax=q3_time), width=.3) +
+  geom_line(aes(group = method), size = 1.2) +
+  scale_y_log10(breaks = c(y_breaks, 5*y_breaks), limits = c(NA, 4000)) +
+  annotation_logticks(sides = "l") +
+  facet_wrap(~ `Number of genes`, 
+             scales = "free_y", labeller = label_both) + 
+  labs(x = "Number of cells", 
+       y = "Median computational time \n (seconds)",
+       colour = "Method") +
+  scale_colour_brewer(palette = "Set1") +
+  theme_bw(18) +
+  theme(legend.position = "bottom", 
+        panel.grid.minor = element_blank(), 
+        axis.text.x = element_text(angle = 60, vjust = 0.5))
+
+time_plot
+
+ggsave(plot = time_plot, 
+       filename = "../../../Figures/simulation/time_plot.pdf",
+       height = 8, width = 8)
+```
+
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```
+

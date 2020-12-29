@@ -1,0 +1,193 @@
+---
+title: "Power grid computation"
+author: "Kevin Wang and Hani Kim"
+date: "`r paste0('Initiated on 2020 Nov 01, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+# Summary
+
+First, we simulate DS scenario based on the input parameters of the CellBench data. We then apply the Dx methods to the simulated data and store only the prediction and the true cell types. The final evaluation will be through a single application of the yardstick metrics. 
+
+# Loading 
+
+## packages
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(SingleCellExperiment)
+  library(scater)
+  library(splatter)
+  # library(parallel)
+  library(plyexperiment)
+  library(furrr)
+})
+
+plan(multisession, workers = 20)
+# params = MulticoreParam(workers = 3, progressbar = TRUE)
+# register(params)
+# system.time(lapply(1:3, function(i){Sys.sleep(i)}))
+# system.time(parallel::mclapply(1:3, function(i){Sys.sleep(i)}, mc.cores = 3))
+# system.time(furrr::future_map(1:3, function(i){Sys.sleep(i)}))
+
+source("../../../R/simulateDS.R")
+source("../../../R/Cepo.R")
+source("../../../R/doDE.R")
+source("../../../R/doDD.R")
+source("../../../R/utils.R")
+```
+
+# Estimate parameters from CellBench data
+
+```{r}
+## generate simulation parameters 
+load("../../../Data/cellbench_sce_3class.RData", verbose=T)
+cellbch = sce_10x_log
+cellbch_sub = cellbch %>% filter_col(celltype %in% c("H1975", "H2228"))
+splatter_param <- splatEstimate(cellbch_sub)
+```
+
+# Simulation function for DS genes
+
+```{r}
+## This function takes in a splatter simulation parameter S4 object and two parameters that add on additional DS genes. 
+## The returned object will be a list, containing a matrix with DS genes and true cell type labels
+simulate_ds_data = function(splatter_param, sd_scale, add_zero){
+  splatter_sim <- splatSimulate(splatter_param, 
+                                nGenes = 10000, 
+                                batchCells = c(100),
+                                method = "single") %>% 
+    scater::logNormCounts()
+  
+  ## simulate 500 DS genes
+  sim_logcounts = splatter_sim %>% logcounts %>% rm_cols_rows_zeroes()
+  
+  sim_rowmeans = rowMeans(sim_logcounts)
+  sim_rowsd = matrixStats::rowSds(sim_logcounts)
+  sim_nzrowmeans = apply(sim_logcounts, 1, nz_mean)
+  sim_nzrowsd = apply(sim_logcounts, 1, nz_sd)
+  sim_nzrowsd[is.na(sim_nzrowsd)] <- 0
+  sim_nz = rowMeans(sim_logcounts != 0)
+  
+  gene_sampling_prob1 = range_transform(sim_nzrowmeans) %>% thres_prob(thres = 0.2)
+  gene_sampling_prob2 = range_transform(sim_nz) %>% thres_prob(thres = 0.4)
+  gene_sampling_prob = range_transform(gene_sampling_prob1*gene_sampling_prob2) %>% thres_prob(thres = 0.2)
+  
+  ds_index = sample(rownames(sim_logcounts), 
+                    size = 500,
+                    prob = gene_sampling_prob)
+  
+  sim_ds = sim_logcounts
+  labels = c(rep("Group1", ncol(sim_ds)/2), rep("Group2", ncol(sim_ds)/2))
+  labels = as.factor(labels)
+  
+  ## Replace splatter simulated genes with our DS genes
+  for(this_gene in ds_index){
+    # print(this_gene)
+    sim_ds[this_gene, ] = replace_ds_genes_v2(sim_ds[this_gene, ], labels,
+                                              mean_scale = 1, 
+                                              sd_scale = sd_scale,
+                                              add_zero = add_zero)
+  }
+  result = lst(
+    sim_ds,
+    labels,
+    ds_index)
+  return(result)
+}
+```
+
+# Running DX algorithms
+
+```{r}
+compute_dx_results = function(mat, labels, ds_index){
+  cty <- factor(labels)
+  
+  sim_ds_result = Cepo(exprsMat = mat, cellTypes = cty)
+  
+  sim_voom <- doVoom(exprsMat = mat, cellTypes = cty)
+  sim_voom_result <- getStats(sim_voom, method = "Voom")
+  
+  sim_mast <- doMAST(exprsMat = mat, cellTypes = cty)
+  sim_mast_result <- getStats(sim_mast, method = "MAST")
+  
+  sim_dd <- doDD(exprsMat = mat, cellTypes = cty)
+  sim_dd_result = getStats(sim_dd, method = "DD")
+
+  dx_listsort = function(dx_result, gene_name){
+    dx_result$Group1[gene_name]
+  }
+  
+  list_result = list(
+    Cepo = sim_ds_result,
+    Voom = sim_voom_result,
+    MAST = sim_mast_result,
+    DD = sim_dd_result
+  )
+  
+  result = list_result %>% 
+    purrr::map(dx_listsort, gene_name = rownames(mat)) %>% 
+    do.call(cbind, .) %>% 
+    as.data.frame %>% 
+    as_tibble() %>% 
+    dplyr::mutate(gene_name = rownames(mat),
+                  true_label = factor(ifelse(gene_name %in% ds_index, "DS", "Other")))
+  
+  return(result)
+}
+```
+
+
+# Parameter grid 
+```{r}
+runs = 20
+
+param_grid = expand.grid(
+  sd_scale = seq(1, 4, by = 0.4),
+  add_zero = seq(0, 14, by = 2),
+  # sd_scale = 1,
+  # add_zero = 0,
+  exp_num = sprintf("exp_%03d", seq_len(runs))) %>%
+  as_tibble() %>% 
+  tibble::rowid_to_column("row_number")
+
+# gene_results = parallel::mcmapply(
+#   FUN = function(sd_scale, add_zero){
+#     sim_data = simulate_ds_data(splatter_param = splatter_param, sd_scale = sd_scale, add_zero = add_zero)
+#     sim_dx_result = compute_dx_results(mat = sim_data$sim_ds, labels = sim_data$labels, ds_index = sim_data$ds_index)
+#     return(sim_dx_result)},
+#   sd_scale = param_grid$sd_scale,
+#   add_zero = param_grid$add_zero,
+#   mc.cores = 20)
+
+gene_results = furrr::future_map2(
+  .x = param_grid$sd_scale,
+  .y = param_grid$add_zero,
+  .f = function(sd_scale, add_zero){
+    sim_data = simulate_ds_data(splatter_param = splatter_param, sd_scale = sd_scale, add_zero = add_zero)
+    sim_dx_result = compute_dx_results(mat = sim_data$sim_ds, labels = sim_data$labels, ds_index = sim_data$ds_index)
+    return(sim_dx_result)}, 
+  .progress = TRUE, 
+  .options = furrr_options(packages = c("limma", "MAST")))
+
+result_grid = param_grid %>% dplyr::mutate(gene_results)
+
+save(result_grid, file = "../../../Data/cellbench_simulation_power_grid.RData")
+```
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```
+

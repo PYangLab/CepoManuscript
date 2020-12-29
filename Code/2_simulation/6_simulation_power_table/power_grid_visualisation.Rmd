@@ -1,0 +1,93 @@
+---
+title: "Power grid visualisation"
+author: "Kevin Wang and Hani Kim"
+date: "`r paste0('Initiated on 2020 Nov 01, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+suppressPackageStartupMessages({
+    library(tidyverse)
+    library(RColorBrewer)
+    library(pheatmap)
+})
+```
+
+
+# Plotting
+
+```{r}
+load("../../../Data/cellbench_simulation_power_grid.RData")
+
+compute_auc = function(tbl){
+    tbl %>% 
+        dplyr::mutate(across(.cols = c(Cepo, Voom, MAST, DD),
+                             .fns = ~ rank(.x, ties.method = "random", na.last = TRUE))) %>%
+        dplyr::summarise(across(.cols = c(Cepo, Voom, MAST, DD),
+                                .fns = ~ yardstick::roc_auc_vec(truth = true_label, estimate = .x)))
+}
+
+auc_grid = result_grid %>% 
+    dplyr::mutate(
+        auc_tbl = purrr::map(gene_results, compute_auc))
+
+auc_summ_tbl = auc_grid %>% 
+    dplyr::select(sd_scale, add_zero, exp_num, auc_tbl) %>% 
+    unnest(auc_tbl) %>% 
+    group_by(sd_scale, add_zero) %>% 
+    summarise(across(.cols = c(Cepo, Voom, MAST, DD),
+                     .fns = median)) %>% 
+    ungroup()
+
+auc_summ_mat_list = pivot_longer(auc_summ_tbl, 
+                                 cols = c(Cepo, Voom, MAST, DD), 
+                                 names_to = "method", values_to = "median_auc") %>% 
+    split(.$method) %>% 
+    purrr::map(.x = ., 
+               .f = ~ .x %>% 
+                   dplyr::select(-method) %>% 
+                   pivot_wider(names_from = "add_zero", values_from = "median_auc") %>% 
+                   as.data.frame %>% 
+                   tibble::column_to_rownames("sd_scale") %>% 
+                   as.matrix)
+
+auc_summ_mat = auc_summ_mat_list %>% do.call(rbind, .)
+colnames(auc_summ_mat) <- 1:ncol(auc_summ_mat)
+rownames(auc_summ_mat) <- 1:nrow(auc_summ_mat)
+
+annot_row <- data.frame(
+    method = rep(names(auc_summ_mat_list), each = 8),
+    sd.scale = rep(seq(1, 4, by = 0.4), 4) #number of methods
+)
+rownames(annot_row) <- 1:nrow(auc_summ_mat)
+annot_col <- data.frame(
+    zprop = rep(c(0,2,4,6,8,10,12,14))
+)
+rownames(annot_col) <- 1:ncol(auc_summ_mat)
+
+my_pal = colorRampPalette(viridis::magma(n=30)[5:30])
+(roc_plot = pheatmap(auc_summ_mat, cluster_rows = F, 
+         cluster_cols = F, color = my_pal(35),
+         border_color = "grey",
+         annotation_row = annot_row, annotation_col = annot_col, show_rownames = F, show_colnames = F))
+
+roc_plot %>% ggsave(filename ="../../../Figures/simulation/power_grid_AUROC_heatmap.pdf", width=9, height=20)
+```
+
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```
+

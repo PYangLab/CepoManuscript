@@ -1,0 +1,108 @@
+---
+title: "Cellbench heatmap of top differential genes"
+author: "Hani Kim"
+date: "`r paste0('Initiated on 2020 Oct 31, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary
+This script generates heatmap of gene expression for the top 200 differential genes identified for each cell type by the differential analysis methods. 
+
+# Loading 
+
+## Packages
+```{r, message = FALSE}
+suppressPackageStartupMessages({
+    library(SingleCellExperiment)
+    library(pheatmap)
+})
+```
+
+## Load 3-class cellbench data and dx results
+```{r}
+load("../../../Data/cellbench_sce_3class.RData", verbose=T)
+rm(sce_CELseq2_log)
+rm(sce_Dropseq_log)
+
+load("../../../Data/cellbench_DE_benchmark_results.RData", verbose=T)
+```
+
+## Source functions
+```{r}
+source("../../../R/utils.R")
+```
+
+
+# Extract genes
+```{r}
+DE.res <- list(Limma=Limma.res,
+                Voom=Voom.res,
+                MAST=MAST.res,
+                ttest=ttest.res,
+                Wilcoxon=Wilcoxon.res,
+                EdgeR=EdgeR.res)
+
+DE.gene <- lapply(DE.res, function(x) lapply(x, function(y) names(y)))
+```
+
+# Generate Upset plot of overlaps (top 50 genes)
+```{r}
+cty <- names(DE.gene[[1]])
+lapply(cty, function(celltype) {
+    DE.gene.celltype <- lapply(DE.gene, function(x) x[[celltype]][1:50])
+    names(DE.gene.celltype) <- names(DE.gene)
+    pdf(file = paste0("../../../Figures/cellbench/cellbench_upset_DE_",celltype,".pdf"))
+    print(UpSetR::upset(UpSetR::fromList(DE.gene.celltype), nsets=6))
+    dev.off()
+})
+```
+
+# Generate heatmaps (top 200 genes)
+```{r}
+#### select top 200 genes
+DE.top <- lapply(DE.gene, function(x) lapply(x, function(y) y[1:200]))
+
+#### reorder cell types
+celltype <- as.character(sce_10x_log$celltype)
+celltype[celltype %in% "HCC827"] <- "1_HCC827"
+celltype[celltype %in% "H2228"] <- "2_H2228"
+celltype[celltype %in% "H1975"] <- "3_H1975"
+
+counter <- 0
+lapply(DE.top, function(top) {
+    counter <<- counter + 1
+    method_name <- names(DE.top)[[counter]]
+    top <- top[c("HCC827", "H2228", "H1975")]
+    
+    plotHeatmap(sce_10x_log, top, celltype) %>% ggsave(filename=paste0("../../../Figures/cellbench/cellbench_heatmap_DE_", method_name, ".pdf"), width=6,height=5)
+})
+
+counter <- 0
+lapply(DE.top, function(top) {
+    counter <<- counter + 1
+    method_name <- names(DE.top)[[counter]]
+    top <- top[c("HCC827", "H2228", "H1975")]
+    
+    plotHeatmap(sce_10x_log, top, celltype, slim=T) %>% ggsave(filename=paste0("../../../Figures/cellbench/cellbench_heatmap_DE_", method_name, ".png"), width=6,height=5)
+})
+```
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```

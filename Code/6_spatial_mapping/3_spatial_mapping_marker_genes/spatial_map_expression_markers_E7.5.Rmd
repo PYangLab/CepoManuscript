@@ -1,0 +1,200 @@
+---
+title: "Visualisation of spatial mapping results of single cells with differential stability genes"
+author: "Hani Kim"
+date: "`r paste0('Initiated on 2020 Oct 31, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary
+This script provide code to generate the results from spatial mapping of single cells from the [scNMT mouse gastrulation data](https://www.nature.com/articles/s41586-019-1825-8) unto [spatially resolved embryo](https://pubmed.ncbi.nlm.nih.gov/31391582/) generated from GEO-seq. Each spatial location is depicted as a pie chart, where the proportion of cell type labels mapped to locations are shown. 
+
+# Loading 
+
+## Packages
+```{r, message = FALSE}
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+})
+```
+
+## Load spatial mapping results
+```{r}
+load("../../../Data/spatial_pieMat.E7.5.RData", verbose=T)
+load("../../../Data/spatialMap.RData", verbose=T)
+```
+
+# Create list of spatial mapping results
+```{r}
+map.res <- list(
+    Cepo=DS.map.E7.5,
+    Voom=Voom.map.E7.5,
+    DD=DD.map.E7.5,
+    MAST=MAST.map.E7.5
+)
+
+map.res <- lapply(map.res, function(x) {
+    rownames(x) <- colnames(marioni_E7.5)
+    return(x)
+})
+```
+
+# Generate size labels from pieMat
+```{r}
+pieMat <- pieMat.E7.5
+labels <- c("Ectoderm", "Endoderm", "Mesoderm")
+
+mat <- lapply(1:ncol(pieMat), function(x) {
+    t <- do.call(rbind, lapply(pieMat[,x], function(y) y))
+    t <- lapply(1:nrow(t), function(y) {
+        if(is.na(t[y,])) {
+            list(rep("0", 4))
+        } else {
+            strsplit(t[y,], " ")
+        }
+    })
+    t <- do.call(rbind, lapply(t, function(x) as.numeric(x[[1]])))
+    colnames(t) <- c(labels, "cell_number")
+    rownames(t) <- rownames(pieMat)
+    return(t)
+})
+names(mat) <- colnames(pieMat)
+
+counter <- 0
+mat_count <- lapply(mat, function(x) {
+    counter <<- counter + 1
+    method <- names(mat)[[counter]]
+    t <- t(apply(x, 1, function(y) {
+        y[1:3]
+    }))
+    t <- as.data.frame(t)
+    tbl <- reshape2::melt(t)
+    tbl$method <- factor(method)
+    tbl$loc <- factor(rep(rownames(t), 3))
+    tbl$size <- as.numeric(rep(x[,"cell_number"], 3))
+    tbl$size <- round(log(tbl$size+1))
+    return(tbl)
+})
+
+mat_count <- do.call(rbind, mat_count)
+mat_count$size <- mat_count$size + 1 # 0 becomes 1
+mat_count$size <- scales::rescale(mat_count$size, to=c(1,8))
+
+mat_size_labels <- as.data.frame(do.call(rbind, strsplit(unique(paste(mat_count$method, mat_count$loc, mat_count$size, sep="_")), "_")))
+mat_size_labels$V1 <- ifelse(mat_size_labels$V1 %in% "DS", "Cepo", mat_size_labels$V1)
+```
+
+# Select saptial gene expression markers
+```{r}
+markers <- list(
+    endo = c("PGA5", "SOX17"),
+    meso = c("FOXC2","LEFTY2"),
+    posterior = c("MIXL1", "T"))
+
+sapply(markers$ectoderm, function(x) {
+    rownames(marioni_E7.5)[grepl(x, rownames(marioni_E7.5))]
+})
+```
+
+# Obtain gene expression for markers by location and method
+```{r}
+counter <- 0
+spatial_exprs_method <- lapply(map.res, function(y) {
+    counter <<- counter + 1
+    method_name <- names(map.res)[[counter]]
+    
+    exprs_loc <- lapply(unique(y$spatialLabel), function(spatial) {
+        
+        counter_int <- 0
+        exprs <- lapply(markers, function(x) {
+            
+            counter_int <<- counter_int + 1
+            embryo_loc <- names(markers)[[counter_int]]
+            g_exprs <- sapply(x, function(g) {
+            gene <- as.numeric(marioni_E7.5[g,y$spatialLabel %in% spatial])
+            gene <- mean(gene[gene>0])
+            return(gene)
+                })
+            names(g_exprs) <- x
+            exprs.dat <- data.frame(
+                method=factor(method_name),
+                spatial=factor(spatial),
+                levels=factor(sapply(strsplit(gsub("X", "", spatial), ""), "[[", 1)),
+                gene_set=factor(embryo_loc),
+                gene=factor(names(g_exprs)),
+                mean=as.numeric(g_exprs)
+            )
+            
+            exprs.dat$size <- as.numeric(mat_size_labels[mat_size_labels$V1 %in% method_name &
+                                mat_size_labels$V2 %in% spatial, "V3"])
+            
+            return(exprs.dat)
+        })
+        exprs <- do.call(rbind, exprs)
+        return(exprs)
+    })
+    exprs_loc <- do.call(rbind, exprs_loc)
+    if(method_name=="DD") {
+        tmp1 <- exprs_loc[1:6,]
+        tmp1$spatial <- "X3EA"
+        tmp1$size <- 1
+        tmp2 <- exprs_loc[1:6,]
+        tmp2$spatial <- "X3EP"
+        tmp2$size <- 1
+        exprs_loc <- rbind(tmp1,tmp2,exprs_loc)
+    }
+    return(exprs_loc)
+})
+spatial_exprs_method <- do.call(rbind, spatial_exprs_method)
+```
+
+# Plot expressions
+```{r fig.height=8, fig.width=30}
+mat <- spatial_exprs_method
+mat$mean[is.na(mat$mean)] <- 0
+mat$levels <- factor(mat$levels, levels=c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"))
+mat <- mat[mat$levels %in% c("3", "4", "5", "6"), ]
+mat$embryo_spatial <- factor(sapply(strsplit(gsub("X", "", gsub("X10", "", as.character(mat$spatial))), ""), function(x) {
+    if (length(x) > 2) {paste0(x[[2]], x[[3]])} else {paste0(x[[2]])}
+    }))
+mat$embryo_spatial <- factor(mat$embryo_spatial, levels=c("EA", "MA", "A", "L1", "R1", "L2", "R2", "P", "MP", "EP"))
+table(mat$embryo_spatial)
+
+my_pal = colorRampPalette(viridis::magma(n=30)[5:30])
+
+g <- mat %>% 
+    group_split(method, gene) %>%
+    map(
+        ~ggplot(., aes(y=levels, x=embryo_spatial, size=size/3, col=mean)) + geom_point() + scale_size(range = c(1, 8), name="Mapped cells") + scale_colour_gradientn(colors=my_pal(35)) + theme_classic()
+    ) %>%
+    plot_grid(plotlist = ., align = 'hv', ncol = 6) 
+g %>% ggsave(file=paste0("../../../Figures/spatial/spatial_E7.5.pdf"), width=25, height=15)
+
+g <- mat %>% 
+    group_split(method, gene) %>%
+    map(
+        ~ggplot(., aes(y=levels, x=embryo_spatial, size=size/3, col=mean)) + geom_point() + scale_size(range = c(1, 8), name="Mapped cells") + scale_colour_gradientn(colors=my_pal(35)) + theme_classic() + theme(legend.position = "none")
+    ) %>%
+    plot_grid(plotlist = ., align = 'hv', ncol = 6) 
+g %>% ggsave(file=paste0("../../../Figures/spatial/spatial_E7.5_no_legend.pdf"), width=18, height=7)
+```
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```

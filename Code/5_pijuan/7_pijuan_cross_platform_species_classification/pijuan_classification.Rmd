@@ -1,0 +1,194 @@
+---
+title: "Pijuan classification"
+author: "Hani Kim"
+date: "`r paste0('Initiated on 2020 Oct 31, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary
+This script runs cross-technology and cross-species classification using differential genes identified from Cepo, Voom, DD and MAST. 
+
+# Loading 
+
+## Packages
+```{r, message = FALSE}
+suppressPackageStartupMessages({
+  library(SingleCellExperiment)
+  library(caret)
+})
+```
+
+## Load scNMT and pijuan data
+```{r}
+marioni <- readRDS("../../../Data/rna/parsed/SingleCellExperiment_genesymbol.rds")
+load("../../../Data/pijuan_atlas.RData")
+load("../../../Data/sce_srinivas.RData")
+```
+
+## Source functions
+```{r}
+source("../../../R/Cepo.R") 
+source("../../../R/doDE.R")
+source("../../../R/doDD.R")
+source("../../../R/utils.R")
+source("../../../R/doClassify.R")
+```
+
+# Process scNMT dataset
+```{r}
+metadata.marioni <- colData(marioni)
+
+marioni_E6.5 <- logcounts(marioni[,metadata.marioni$stage %in% c("E6.5")])
+colnames(marioni_E6.5) <- metadata.marioni$sample[metadata.marioni$stage %in% c("E6.5")]
+marioni_E6.5.lineage.init <- metadata.marioni$lineage[metadata.marioni$stage %in% c("E6.5")]
+marioni_E6.5 <- marioni_E6.5[,marioni_E6.5.lineage.init %in% c("Visceral_endoderm", "Epiblast", "Primitive_Streak")]
+marioni_E6.5 <- marioni_E6.5[!is.na(rownames(marioni_E6.5)),]
+marioni_E6.5.lineage <- marioni_E6.5.lineage.init[marioni_E6.5.lineage.init %in% c("Visceral_endoderm", "Epiblast", "Primitive_Streak")]
+marioni_E6.5.lineage <- gsub("_", " ", marioni_E6.5.lineage)
+rownames(marioni_E6.5) <- make.names(rownames(marioni_E6.5), unique = TRUE)
+```
+
+# Process the pijuan dataset
+```{r}
+pijuan <- logcounts(scater::logNormCounts(pijuan.sce))
+metadata.pijuan <- colData(pijuan.sce)
+
+##
+sel <- (metadata.pijuan$stage %in% c("E6.5")) & (!metadata.pijuan$doublet)
+pijuan_E6.5 <- pijuan[, sel]
+colnames(pijuan_E6.5) <- metadata.pijuan$sample[sel]
+pijuan_E6.5.lineage.init <- metadata.pijuan$celltype[sel]
+pijuan_E6.5 <- as.matrix(pijuan_E6.5[,pijuan_E6.5.lineage.init %in% c("Visceral endoderm", "Epiblast", "Primitive Streak")])
+pijuan_E6.5.lineage <- pijuan_E6.5.lineage.init[pijuan_E6.5.lineage.init %in% c("Visceral endoderm", "Epiblast", "Primitive Streak")]
+rownames(pijuan_E6.5) <- toupper(rownames(pijuan_E6.5))
+colnames(pijuan_E6.5) <- paste("Cell", 1:ncol(pijuan_E6.5), sep="")
+```
+
+# Perform cross-technology classification 
+```{r}
+# repeat 10 times (stratified sampling 80%)
+set.seed(1)
+trainIndex <- createDataPartition(marioni_E6.5.lineage, p = .8, times = 10)
+
+grand.DS <- c()
+grand.MAST <- c()
+grand.Voom <- c()
+grand.DD <- c()
+grand.rand <- c()
+
+for (i in 1:length(trainIndex)) {
+  
+  DS.list <- Cepo(marioni_E6.5[,trainIndex[[i]]], marioni_E6.5.lineage[trainIndex[[i]]])
+  MAST.list <- doMAST(marioni_E6.5[,trainIndex[[i]]], marioni_E6.5.lineage[trainIndex[[i]]])
+  Voom.list <- doVoom(marioni_E6.5[,trainIndex[[i]]], as.factor(marioni_E6.5.lineage[trainIndex[[i]]]))
+  DD.list <- doDD(marioni_E6.5[,trainIndex[[i]]], marioni_E6.5.lineage[trainIndex[[i]]])
+
+  top <- 25
+  DS <- unique(unlist(lapply(DS.list, function(x)names(x)[1:top])))
+  MAST <- unique(unlist(lapply(MAST.list, function(x){rownames(x[order(x[,"pval"], decreasing = FALSE),])[1:top]})))
+  Voom <- unique(unlist(lapply(Voom.list, function(x){rownames(x[order(x[,"t"], decreasing = TRUE),])[1:top]})))
+  DD <- unique(unlist(lapply(DD.list, function(x){rownames(x[order(x[,1], decreasing = TRUE),])[1:top]})))
+
+
+  # DS
+  o <- mIntersect(rownames(marioni_E6.5), rownames(pijuan_E6.5), DS)
+  pred.DS <- kNN(exprsMat_train = marioni_E6.5[o,], exprsMat_test = pijuan_E6.5[o,], trainLabels = marioni_E6.5.lineage)
+  # MAST
+  o <- mIntersect(rownames(marioni_E6.5), rownames(pijuan_E6.5), MAST)
+  pred.MAST <- kNN(exprsMat_train = marioni_E6.5[o,], exprsMat_test = pijuan_E6.5[o,], trainLabels = marioni_E6.5.lineage)
+  # Voom
+  o <- mIntersect(rownames(marioni_E6.5), rownames(pijuan_E6.5), Voom)
+  pred.Voom <- kNN(exprsMat_train = marioni_E6.5[o,], exprsMat_test = pijuan_E6.5[o,], trainLabels = marioni_E6.5.lineage)
+  # BD
+  o <- mIntersect(rownames(marioni_E6.5), rownames(pijuan_E6.5), DD)
+  pred.DD <- kNN(exprsMat_train = marioni_E6.5[o,], exprsMat_test = pijuan_E6.5[o,], trainLabels = marioni_E6.5.lineage)
+
+  ##
+  grand.DS <- c(grand.DS, mean(avgAcc(pred.DS, pijuan_E6.5.lineage)))
+  grand.MAST <- c(grand.MAST, mean(avgAcc(pred.MAST, pijuan_E6.5.lineage)))
+  grand.Voom <- c(grand.Voom, mean(avgAcc(pred.Voom, pijuan_E6.5.lineage)))
+  grand.DD <- c(grand.DD, mean(avgAcc(pred.DD, pijuan_E6.5.lineage)))
+  grand.rand <- c(grand.rand, mean(avgAcc(pijuan_E6.5.lineage[sample(1:length(pijuan_E6.5.lineage))], pijuan_E6.5.lineage)))
+
+}
+
+boxplot(grand.DS, grand.MAST, grand.Voom, grand.DD, main="mouse p=0.8 k=10 top=25", col="gray")
+```
+
+# Perform cross-species classification of human and mouse
+```{r}
+human.lineage.init <- as.character(colData(srinivas)[,2])
+idx <- human.lineage.init %in% c("Endoderm", "Epiblast", "Primitive Streak")
+human <- logcounts(srinivas[,idx])
+human.lineage <- human.lineage.init[idx]
+human.lineage <- gsub("Endoderm", "Visceral endoderm", human.lineage)
+colnames(human) <- paste("Cell", 1:ncol(human), sep="")
+```
+
+## Run Dx on human data
+```{r}
+# repeat 10 times (stratified sampling 80%)
+set.seed(12345)
+trainIndex <- createDataPartition(marioni_E6.5.lineage, p = .8, times = 10)
+
+grand.DS <- c()
+grand.MAST <- c()
+grand.Voom <- c()
+grand.DD <- c()
+grand.rand <- c()
+
+for (i in 1:length(trainIndex)) {
+  
+  DS.list <- Cepo(marioni_E6.5[,trainIndex[[i]]], marioni_E6.5.lineage[trainIndex[[i]]])
+  MAST.list <- doMAST(marioni_E6.5[,trainIndex[[i]]], marioni_E6.5.lineage[trainIndex[[i]]])
+  Voom.list <- doVoom(marioni_E6.5[,trainIndex[[i]]], as.factor(marioni_E6.5.lineage[trainIndex[[i]]]))
+  DD.list <- doDD(marioni_E6.5[,trainIndex[[i]]], marioni_E6.5.lineage[trainIndex[[i]]])
+
+  top <- 25
+  DS <- unique(unlist(lapply(DS.list, function(x)names(x)[1:top])))
+  MAST <- unique(unlist(lapply(MAST.list, function(x){rownames(x[order(x[,"pval"], decreasing = FALSE),])[1:top]})))
+  Voom <- unique(unlist(lapply(Voom.list, function(x){rownames(x[order(x[,"t"], decreasing = TRUE),])[1:top]})))
+  DD <- unique(unlist(lapply(DD.list, function(x){rownames(x[order(x[,1], decreasing = TRUE),])[1:top]})))
+
+  # DS
+  o <- mIntersect(rownames(marioni_E6.5), rownames(human), DS)
+  pred.DS <- kNN(exprsMat_train = marioni_E6.5[o,], exprsMat_test = human[o,], trainLabels = marioni_E6.5.lineage)
+  # MAST
+  o <- mIntersect(rownames(marioni_E6.5), rownames(human), MAST)
+  pred.MAST <- kNN(exprsMat_train = marioni_E6.5[o,], exprsMat_test = human[o,], trainLabels = marioni_E6.5.lineage)
+  # Voom
+  o <- mIntersect(rownames(marioni_E6.5), rownames(human), Voom)
+  pred.Voom <- kNN(exprsMat_train = marioni_E6.5[o,], exprsMat_test = human[o,], trainLabels = marioni_E6.5.lineage)
+  # DD
+  o <- mIntersect(rownames(marioni_E6.5), rownames(human), DD)
+  pred.DD <- kNN(exprsMat_train = marioni_E6.5[o,], exprsMat_test = human[o,], trainLabels = marioni_E6.5.lineage)
+
+  ##
+  grand.DS <- c(grand.DS, mean(avgAcc(pred.DS, human.lineage)))
+  grand.MAST <- c(grand.MAST, mean(avgAcc(pred.MAST, human.lineage)))
+  grand.Voom <- c(grand.Voom, mean(avgAcc(pred.Voom, human.lineage)))
+  grand.DD <- c(grand.DD, mean(avgAcc(pred.DD, human.lineage)))
+  grand.rand <- c(grand.rand, mean(avgAcc(human.lineage[sample(1:length(human.lineage))], human.lineage)))
+}
+boxplot(grand.DS, grand.MAST, grand.Voom, grand.DD, main="human p=0.8 k=10 top=25", col="gray")
+```
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```

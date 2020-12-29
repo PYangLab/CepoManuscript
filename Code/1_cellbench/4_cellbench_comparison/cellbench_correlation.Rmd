@@ -1,0 +1,112 @@
+---
+title: "Cellbench correlation plot of differential analysis statistics"
+author: "Hani Kim"
+date: "`r paste0('Initiated on 2020 Oct 31, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary
+This script generates correlation plot of the ranked differential statistics generated using the benchmarked differential analysis methods. 
+
+# Loading 
+
+## Packages
+```{r, message = FALSE}
+suppressPackageStartupMessages({
+  library(SingleCellExperiment)
+  library(Hmisc)
+  library(corrplot)
+  library(GGally)
+  library(RColorBrewer)
+})
+```
+
+## Load 3-class cellbench data and dx results
+```{r}
+load("../../../Data/cellbench_sce_3class.RData", verbose=T)
+rm(sce_CELseq2_log)
+rm(sce_Dropseq_log)
+
+load("../../../Data/cellbench_DE_benchmark_results.RData", verbose=T)
+load("../../../Data/cellbench_Dx_benchmark_results.RData", verbose=T)
+```
+
+## Source functions
+```{r}
+source("../../../R/utils.R")
+```
+
+# Calculate stability scores
+```{r}
+exprsMat <- logcounts(sce_10x_log)
+celltype <- factor(sce_10x_log$celltype)
+
+zprop_score <- Cepo_components(exprsMat, celltype, score="zprop")
+cv_score <- Cepo_components(exprsMat, celltype, score="cv")
+
+zprop <- apply(exprsMat, 1, function(x) length(x[x==0])/length(x))
+cv <- apply(exprsMat, 1, function(x) sd(x)/mean(x))
+
+idx_all <- lapply(levels(celltype), function(x) {
+  intersect(names(cv_score[[x]]), names(zprop_score[[x]][!is.infinite(zprop_score[[x]])]))
+            })
+names(idx_all) <- names(cv_score)
+```
+
+# Generate correlation plot against stability score
+```{r fig.height=5, fig.width=10}
+pdf(file="../../../Figures/cellbench/cellbench_correlation-plot2.pdf", width=12, height=4)
+par(mfrow=c(1,3))
+lapply(levels(celltype), function(i) {
+  
+  idx <- idx_all[[i]]
+  df=data.frame(Cepo=rank(DS.res[[i]])[idx],
+                Voom=rank(Voom.res[[i]])[idx],
+                Limma=rank(Limma.res[[i]])[idx],
+                ttest=rank(ttest.res[[i]])[idx],
+                EdgeR=rank(EdgeR.res[[i]])[idx],
+                MAST=rank(MAST.res[[i]])[idx],
+                Wilcoxon=rank(Wilcoxon.res[[i]])[idx],
+                DD=rank(DD.res[[i]])[idx],
+                rCV=rank(cv_score[[i]])[idx],
+                rzprop=rank(zprop_score[[i]])[idx])
+  rownames(df) = idx
+
+  res <- rcorr(as.matrix(df), type="spearman")
+  res_cor <- c(res$r)
+  res_cor <- matrix(res_cor, nrow=ncol(df), ncol=ncol(df))
+  rownames(res_cor) <- colnames(df)
+  colnames(res_cor) <- colnames(df)
+  
+  #my_col <- rev(RColorBrewer::brewer.pal(6, "RdYlBu"))  
+  my_col <- rev(RColorBrewer::brewer.pal(11, "Spectral"))
+  corrplot(res_cor, type = "lower", p.mat = res$P, 
+           sig.level = 0.01, addCoef.col = "black",
+           tl.col="black", tl.srt=45,title=i,
+           col= colorRampPalette(my_col)(20)
+           )
+})
+dev.off()
+```
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```
+
+

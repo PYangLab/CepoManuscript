@@ -1,0 +1,68 @@
+---
+title: "Fetal tissue atlas timing"
+author: "Hani Kim"
+date: "`r paste0('Initiated on 2020 Oct 31, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+# Summary
+
+# Loading 
+
+## Packages
+    ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages({
+    library(ggplot2)
+    library(dplyr)
+})
+```
+
+## Load timing results
+```{r}
+load("../../../Data/fetal_timing_SMS_29Dec2020.RData", verbose=T)
+
+result_tbl$timing_result <- c(2935, 5111, 7706, 10650, 10919, 11837)
+```
+
+# Run Cepo
+```{r}
+result_tbl <- result_tbl %>% dplyr::mutate(timing_in_hours=timing_result/3600)
+
+x_max = result_tbl$n_cells[!is.infinite(result_tbl$n_cells)] %>% max(na.rm = TRUE)
+x_breaks_scales = ceiling(log10(x_max)) + 1L
+x_breaks = 10^seq(0, x_breaks_scales)
+
+time_plot = result_tbl %>% 
+  ggplot(aes(x = `n_cells`, y = timing_in_hours)) +
+  geom_point(size = 4) +
+  scale_x_log10(breaks = c(x_breaks, 5*x_breaks)) +
+  annotation_logticks(sides = "b") +
+  labs(x = "Number of cells", 
+       y = "Computational time (hr)") +
+  scale_colour_brewer(palette = "Set1") +
+  theme_bw(18) +
+  theme(legend.position = "bottom", 
+        panel.grid.minor = element_blank(), 
+        axis.text.x = element_text(angle = 60, vjust = 0.5))
+time_plot %>% ggsave(filename="../../../Figures/timing_plot_fetal.pdf", width=5, height=5)
+```
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```

@@ -1,0 +1,90 @@
+---
+title: "Fetal tissue atlas timing"
+author: "Kevin Wang"
+date: "`r paste0('Initiated on 2020 Oct 31, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+# Summary
+
+# Loading 
+
+## Packages
+    ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#devtools::install_github(repo = "mojaveazure/loomR", ref = "develop")
+suppressPackageStartupMessages({
+    library(HDF5Array)
+    library(DelayedArray)
+    library(DelayedMatrixStats)
+    library(BiocParallel)
+    library(LoomExperiment)
+    library(lobstr)
+    library(loomR)
+})
+```
+
+## Source functions
+```{r}
+source("../../../R/Cepo.R") 
+```
+
+# Run Cepo
+```{r}
+data_path = "../../../Data/"
+
+DelayedArray:::set_verbose_block_processing(TRUE)
+#DelayedArray::setAutoBlockSize(size = .Machine$integer.max - 1)
+DelayedArray::setAutoBlockSize(size = size = 8e9) #set to 8RAM
+DelayedArray::getAutoBlockSize()
+BPPARAM = BiocParallel::MulticoreParam(workers = 10)
+DelayedArray::setAutoBPPARAM(BPPARAM = BPPARAM)
+DelayedArray::getAutoBPPARAM()
+
+scle_subset2 = HDF5Array::loadHDF5SummarizedExperiment(dir = paste0(data_path, "protein_coding_subset_normalised.h5"))
+exprsMat_da = DelayedArray::DelayedArray(assay(scle_subset2, "logcounts"))
+coldata = colData(scle_subset2)
+
+one_run = function(n_cells){
+total_cells = ncol(exprsMat_da)
+selected_cells = sample(seq_len(total_cells), size = n_cells)
+
+timing_result <- system.time(computed_results <- Cepo::Cepo(exprsMat = exprsMat_da[, selected_cells], 
+                                     cellTypes = coldata$Main_cluster_name[selected_cells])
+            )[["elapsed"]]
+
+result = list(
+    timing_result = timing_result,
+    computed_result = computed_result)
+
+return(result)
+}
+
+param_tbl = tibble(n_cells = c(1e3, 1e4, 1e5, 1e6, 2e6, 4e6))
+list_result = lapply(param_tbl$n_cells, FUN = one_run)
+result_tbl = param_tbl %>% 
+    dplyr::mutate(
+        timing_result = list_result %>% purrr::map("timing_result"),
+        computed_result = list_result %>% purrr::map("computed_result"))
+
+save(result_tbl, file = "../../../Data/fetal_timing.RData")
+```
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```

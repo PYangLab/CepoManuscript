@@ -1,0 +1,120 @@
+---
+title: "Differential analysis on simulation data"
+author: "Hani Kim and Kevin Wang"
+date: "`r paste0('Initiated on 2020 Oct 31, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary
+This script runs the differential analysis methods on the scRNA-seq data containing simulated differential stability genes. 
+
+# Loading 
+
+## Packages
+```{r, message = FALSE}
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(plyexperiment)
+  library(ggthemes)
+})
+```
+
+## Source functions
+```{r}
+source("../../../R/simulateDS.R")
+source("../../../R/Cepo.R")
+source("../../../R/doDE.R")
+source("../../../R/doDD.R")
+```
+
+## Load simulated scRNA-seq datasets
+```{r}
+load("../../../Data/201210_simulation_stability_genes.RData", verbose=T)
+load("../../../Data/201210_simulation_params.RData", verbose=T)
+
+sim_logcounts = sim %>% logcounts %>% rm_cols_rows_zeroes()
+```
+
+# Run Cepo 
+```{r}
+sim_ds_res = lapply(sim_list, function(mat) Cepo(exprsMat = mat, cellTypes = labels))
+```
+
+# Run Dx alogrithms 
+```{r}
+##### run Voom
+sim_Voom = lapply(sim_list, function(mat) doVoom(exprsMat = mat, cellTypes = labels))
+sim_Voom_res <- lapply(sim_Voom, function(x) {
+  res <- getStats(x, method="Voom")
+  names(res) <-  levels(labels)
+  return(res)
+})
+
+##### run DD
+sim_DD = lapply(sim_list, function(mat) doDD(exprsMat = mat, cellTypes = labels))
+sim_DD_res <- lapply(sim_DD, function(x) {
+  res <- getStats(x, method="DD")
+  names(res) <-  levels(labels)
+  return(res)
+})
+
+##### run MAST
+sim_MAST = lapply(sim_list, function(mat) doMAST(exprsMat = mat, cellTypes = labels))
+sim_MAST_res <- lapply(sim_MAST, function(x) {
+  res <- getStats(x, method="MAST")
+  names(res) <-  levels(labels)
+  return(res)
+})
+
+save(sim_DD, sim_Voom, sim_MAST,
+     sim_ds_res, sim_DD_res, sim_Voom_res, sim_MAST_res,
+     file="../../../Data/cepo_data/simulation_dx_results_201210.RData")
+
+##### run t-test
+sim_ttest = lapply(sim_list, function(mat) doTest(exprsMat = mat, cellTypes = labels))
+sim_ttest_res <- lapply(sim_ttest, function(x) {
+  res <- getStats(x, method="ttest")
+  names(res) <-  levels(labels)
+  return(res)
+})
+
+##### run Limma
+sim_Limma = lapply(sim_list, function(mat) doLimma(exprsMat = mat, cellTypes = labels))
+sim_Limma_res <- lapply(sim_Limma, function(x) {
+  res <- getStats(x, method="Limma")
+  names(res) <-  levels(labels)
+  return(res)
+})
+
+##### run Wilcoxon
+sim_Wilcoxon = lapply(sim_list, function(mat) doWilcoxon(exprsMat = mat, cellTypes = labels))
+sim_Wilcoxon_res <- lapply(sim_Wilcoxon, function(x) {
+  res <- getStats(x, method="Wilcoxon")
+  names(res) <-  levels(labels)
+  return(res)
+})
+
+save(sim_ttest, sim_Limma, sim_Wilcoxon,
+     sim_ttest_res, sim_Limma_res, sim_Wilcoxon_res,
+     file="../../../Data/cepo_data/simulation_de_results_201210.RData")
+```
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```

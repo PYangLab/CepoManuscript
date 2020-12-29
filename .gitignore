@@ -1,0 +1,11 @@
+*.Rproj.user
+.Rproj
+.Rhistory
+*.RData
+*.RDS
+.Ruserdata
+.git
+.DS_Store
+*/.DS_Store
+Figures
+.Rproj.user

@@ -1,0 +1,104 @@
+---
+title: "Permutation with Cepo"
+author: "Kevin Wang and Hani Kim"
+date: "`r paste0('Initiated on 2020 Oct 31, compiled on ', format(Sys.time(), '%Y %b %d'))`"
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+# Summary
+This script runs permutations for Cepo on the 3-class Cellbench data.
+
+# Loading 
+
+## Packages
+```{r, message = FALSE}
+suppressPackageStartupMessages({
+  library(listenv)
+  library(tools)
+  library(furrr)
+  library(purrr)
+})
+```
+
+## Load 3-class cellbench data and dx results
+```{r}
+load("../../../Data/cellbench_sce_3class.RData", verbose=T)
+rm(sce_CELseq2_log)
+rm(sce_Dropseq_log)
+```
+
+## Source functions
+```{r}
+source("../../../R/utils.R")
+source("../../../R/Cepo.R")
+```
+
+# Retrieve cell identity genes with Cepo
+```{r}
+##### generate cell type labels
+cty <- factor(sce_10x_log$celltype)
+
+##### run Cepo
+DS.res <- Cepo(logcounts(sce_10x_log), cty)
+```
+
+# Run permutation with Cepo
+```{r}
+set.seed(2020)
+mat <- logcounts(sce_10x_log)
+
+DS.permut = furrr::future_map(
+  1:1000, 
+  ~ Cepo(exprsMat = mat, cellTypes = sample(cty)), .progress = TRUE)
+#future::plan(multisession, workers = 2)
+DS.permut.pvalue_H1975 = purrr::map(
+  .x = DS.permut,
+  .f = ~ .x$H1975[names(DS.res$H1975)] >= DS.res$H1975) %>%
+  do.call(cbind, .) %>%
+  rowMeans()
+DS.permut.pvalue_H2228 = purrr::map(
+  .x = DS.permut,
+  .f = ~ .x$H2228[names(DS.res$H2228)] >= DS.res$H2228) %>%
+  do.call(cbind, .) %>%
+  rowMeans()
+DS.permut.pvalue_HCC827 = purrr::map(
+  .x = DS.permut,
+  .f = ~ .x$HCC827[names(DS.res$HCC827)] >= DS.res$HCC827) %>%
+  do.call(cbind, .) %>%
+  rowMeans()
+
+save(DS.permut.pvalue_H1975, 
+     DS.permut.pvalue_H2228, 
+     DS.permut.pvalue_HCC827, 
+     file="../../../Data/cellbench_permutation.RData")
+```
+
+# Visualisation Cepo permutation results
+```{r}
+load("../../../Data/cellbench_permutation.RData", verbose=T)
+
+par(mfrow=c(1,3))
+hist(stats::p.adjust(DS.permut.pvalue_H1975, method = "BH"))
+hist(stats::p.adjust(DS.permut.pvalue_H2228, method = "BH"))
+hist(stats::p.adjust(DS.permut.pvalue_HCC827, method = "BH"))
+
+table(stats::p.adjust(DS.permut.pvalue_H1975, method = "BH") < 0.05)
+table(stats::p.adjust(DS.permut.pvalue_H2228, method = "BH") < 0.05)
+table(stats::p.adjust(DS.permut.pvalue_HCC827, method = "BH") < 0.05)
+```
+
+# Session Info
+```{r}
+sessioninfo::session_info()
+```
