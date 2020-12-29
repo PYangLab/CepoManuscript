@@ -27,8 +27,6 @@ remotes::install_github("PYangLab/Cepo", dependencies = TRUE,
 
 The documentation for _Cepo_ is available from http://github.io/PYangLab/Cepo
 
-To view the vignette and all the package documentation for the development version visit http://github.io/HaniJieunKim/Cepo.
-
 ## Citing _Cepo_
 
 If you use _Cepo_ in your work please cite
